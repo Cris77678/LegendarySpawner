@@ -1,11 +1,15 @@
 package com.tuservidor.legendaryspawner.spawn;
 
+import com.cobblemon.mod.common.Cobblemon;
 import com.cobblemon.mod.common.api.pokemon.PokemonProperties;
 import com.cobblemon.mod.common.api.pokemon.PokemonSpecies;
 import com.cobblemon.mod.common.entity.pokemon.PokemonEntity;
 import com.cobblemon.mod.common.pokemon.Pokemon;
 import com.cobblemon.mod.common.pokemon.Species;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import com.tuservidor.legendaryspawner.LegendarySpawner;
+import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.registry.RegistryKey;
@@ -14,8 +18,11 @@ import net.minecraft.util.Identifier;
 import net.minecraft.entity.Entity;
 import net.minecraft.block.BlockState;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
+import java.io.File;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -23,18 +30,18 @@ public class LegendarySpawnManager {
 
     private static final Map<UUID, ActiveLegendary> activeLegendaries = new ConcurrentHashMap<>();
     private static final Set<UUID> pendingSpawn = ConcurrentHashMap.newKeySet();
-
     private static ScheduledExecutorService scheduler;
     private static ScheduledFuture<?> spawnTask;
+    private static final Gson GSON = new Gson();
 
     public static void start() {
-        scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "LegendarySpawner-Scheduler");
+        if (scheduler != null && !scheduler.isShutdown()) scheduler.shutdownNow();
+        scheduler = Executors.newScheduledThreadPool(2, r -> {
+            Thread t = new Thread(r, "LegendarySpawner-Worker");
             t.setDaemon(true);
             return t;
         });
         scheduleNext();
-        LegendarySpawner.LOGGER.info("LegendarySpawner scheduler started.");
     }
 
     public static void stop() {
@@ -53,114 +60,106 @@ public class LegendarySpawnManager {
         }, interval, interval, TimeUnit.MINUTES);
     }
 
-    public static boolean attemptSpawn(boolean forced, ServerPlayerEntity adminSource, String rawProperties) {
+    public static boolean attemptSpawn(boolean forced, ServerCommandSource source, String rawProperties) {
         var server = LegendarySpawner.server;
         if (server == null) return false;
 
         var cfg = LegendarySpawner.config;
         List<ServerPlayerEntity> players = new ArrayList<>(server.getPlayerManager().getPlayerList());
-
         cleanupDead();
         
         if (players.isEmpty()) {
-            if (adminSource != null) sendMsg(adminSource, cfg.getPrefix() + "&cNo hay jugadores online.");
+            if (source != null) sendMsg(source, cfg.getPrefix() + "&cNo hay jugadores online.");
             return false;
         }
-
         if (activeLegendaries.size() >= cfg.getMaxActiveLegendaries()) {
-            if (adminSource != null) sendMsg(adminSource, cfg.format(cfg.getMsgAlreadyActive()));
+            if (source != null) sendMsg(source, cfg.format(cfg.getMsgAlreadyActive()));
             return false;
         }
-        
         if (!forced && players.size() < cfg.getMinPlayersRequired()) return false;
-        if (!forced) {
-            int roll = new Random().nextInt(100);
-            if (roll >= cfg.getSpawnChancePercent()) return false;
-        }
+        if (!forced && ThreadLocalRandom.current().nextInt(100) >= cfg.getSpawnChancePercent()) return false;
 
-        // Fix: Parseo avanzado de PokemonProperties (Ej: "mewtwo level=100 shiny=yes")
-        // Y conversión automática a minúsculas para prevenir crasheos de Identifiers.
-        Pokemon forcedPokemon = null;
-        if (rawProperties != null) {
+        ServerPlayerEntity adminPlayer = (source != null && source.getEntity() instanceof ServerPlayerEntity p) ? p : null;
+        ServerPlayerEntity target = (forced && adminPlayer != null) ? adminPlayer : players.get(ThreadLocalRandom.current().nextInt(players.size()));
+
+        scheduler.execute(() -> {
             try {
-                String safeProps = rawProperties.toLowerCase(Locale.ROOT);
-                forcedPokemon = PokemonProperties.Companion.parse(safeProps).create();
-                if (forcedPokemon.getSpecies() == null) throw new Exception("Invalid species");
+                Pokemon pokemon = null;
+                if (rawProperties != null) {
+                    pokemon = PokemonProperties.Companion.parse(rawProperties.toLowerCase(Locale.ROOT)).create();
+                } else {
+                    Species species = pickLegendaryForPlayer(target);
+                    if (species != null) {
+                        int randomLevel = 50 + ThreadLocalRandom.current().nextInt(21);
+                        pokemon = PokemonProperties.Companion.parse(species.showdownId() + " level=" + randomLevel).create();
+                    }
+                }
+                
+                if (pokemon == null) return;
+                
+                final Pokemon finalPokemon = pokemon;
+                server.execute(() -> spawnOnServerThread(cfg, finalPokemon, target, source, forced));
             } catch (Exception e) {
-                if (adminSource != null) sendMsg(adminSource, cfg.getPrefix() + "&cPropiedad inválida. Usa nombres correctos (ej: 'rayquaza' o 'deoxys form=attack').");
-                return false;
+                if (source != null) sendMsg(source, cfg.getPrefix() + "&cPropiedad o especie invalida.");
             }
-        }
-
-        ServerPlayerEntity target = (forced && adminSource != null) ? adminSource : players.get(new Random().nextInt(players.size()));
-
-        final Pokemon finalForced = forcedPokemon;
-        final ServerPlayerEntity finalTarget = target;
-        final ServerPlayerEntity finalAdmin = adminSource;
-
-        server.execute(() -> spawnOnServerThread(cfg, finalForced, finalTarget, finalAdmin, forced));
+        });
         return true;
     }
 
-    private static void spawnOnServerThread(
-            com.tuservidor.legendaryspawner.config.SpawnerConfig cfg,
-            Pokemon forcedPokemon, ServerPlayerEntity target,
-            ServerPlayerEntity adminSource, boolean forced) {
+    private static void spawnOnServerThread(com.tuservidor.legendaryspawner.config.SpawnerConfig cfg,
+            Pokemon pokemon, ServerPlayerEntity target, ServerCommandSource source, boolean forced) {
+        
+        UUID trackId = UUID.randomUUID();
         try {
-            Pokemon pokemon = forcedPokemon;
-            
-            if (pokemon == null) {
-                Species species = pickLegendaryForPlayer(target);
-                if (species == null) return; 
-                int randomLevel = 50 + new Random().nextInt(21);
-                String buildProps = species.showdownId() + " level=" + randomLevel;
-                pokemon = PokemonProperties.Companion.parse(buildProps).create();
-            }
-            
             ServerWorld world = (ServerWorld) target.getWorld();
             Vec3d pos = findSpawnPos(target, world, cfg.getSpawnRadiusBlocks());
 
-            UUID trackId = UUID.randomUUID();
             pokemon.getPersistentData().putString("legendaryspawner_id", trackId.toString());
             pendingSpawn.add(trackId);
 
-            PokemonEntity entity = new PokemonEntity(world, pokemon, com.cobblemon.mod.common.CobblemonEntities.POKEMON);
-            entity.setPos(pos.x, pos.y, pos.z);
+            PokemonEntity entity = com.cobblemon.mod.common.CobblemonEntities.POKEMON.create(world);
+            if (entity == null) throw new IllegalStateException("Error interno al instanciar PokemonEntity");
             
-            // Fix: Prevenir exploit de portales. Bloqueamos su capacidad de usar portales
-            // para que no cambien de dimensión y dupliquen el slot de legendarios.
-            entity.setPortalCooldown(1000000);
+            entity.setPokemon(pokemon);
+            entity.setPos(pos.x, pos.y, pos.z);
+            entity.setPortalCooldown(1000000); 
+            entity.fallDistance = 0;
 
             world.spawnEntityAndPassengers(entity);
-            pendingSpawn.remove(trackId);
 
-            ScheduledFuture<?> task = null;
-            int despawnMin = cfg.getDespawnAfterMinutes();
-            if (despawnMin > 0) {
-                task = scheduler.schedule(() -> despawn(trackId), despawnMin, TimeUnit.MINUTES);
-            }
-
-            ActiveLegendary active = new ActiveLegendary(trackId, entity.getUuid(), pokemon.getSpecies().getName(), world.getRegistryKey().getValue().toString(), task);
+            ActiveLegendary active = new ActiveLegendary(trackId, entity.getUuid(), pokemon.getSpecies().getName(), world.getRegistryKey().getValue().toString());
             activeLegendaries.put(trackId, active);
 
             String alert = cfg.format(cfg.getMsgSpawnAlert(), "%pokemon%", pokemon.getSpecies().getName(), "%player%", target.getName().getString(),
-                "%x%", String.valueOf((int) pos.x), "%y%", String.valueOf((int) pos.y), "%z%", String.valueOf((int) pos.z));
+                "%x%", String.valueOf(MathHelper.floor(pos.x)), "%y%", String.valueOf(MathHelper.floor(pos.y)), "%z%", String.valueOf(MathHelper.floor(pos.z)));
             broadcastAll(alert);
 
-            if (forced && adminSource != null) {
-                sendMsg(adminSource, cfg.format(cfg.getMsgForced(), "%pokemon%", pokemon.getSpecies().getName(), "%player%", target.getName().getString()));
+            if (forced && source != null) {
+                sendMsg(source, cfg.format(cfg.getMsgForced(), "%pokemon%", pokemon.getSpecies().getName(), "%player%", target.getName().getString()));
             }
-        } catch (Exception e) {}
+
+            int despawnMin = cfg.getDespawnAfterMinutes();
+            if (despawnMin > 0) active.despawnTask = scheduler.schedule(() -> despawn(trackId), despawnMin, TimeUnit.MINUTES);
+            
+            saveStateAsync(); // Llamada I/O no bloqueante
+
+        } catch (Exception e) {
+            LegendarySpawner.LOGGER.error("Fallo critico durante el spawn", e);
+        } finally {
+            // Protección contra Memory Leak en caso de Fallo Crítico
+            pendingSpawn.remove(trackId);
+        }
     }
 
-    public static int removeAll(ServerPlayerEntity admin) {
+    public static int removeAll(ServerCommandSource source) {
         cleanupDead();
         int count = 0;
         for (ActiveLegendary active : activeLegendaries.values()) {
-            if (killEntity(active)) count++;
+            if (killEntity(active, true)) count++;
         }
         activeLegendaries.clear();
-        if (admin != null) sendMsg(admin, LegendarySpawner.config.format(LegendarySpawner.config.getMsgRemoved()));
+        saveStateAsync();
+        if (source != null) sendMsg(source, LegendarySpawner.config.format(LegendarySpawner.config.getMsgRemoved()));
         return count;
     }
 
@@ -172,83 +171,136 @@ public class LegendarySpawnManager {
     public static boolean isManagedEntity(PokemonEntity entity) {
         UUID targetUuid = entity.getUuid();
         for (ActiveLegendary active : activeLegendaries.values()) {
-            if (active.entityUuid().equals(targetUuid)) return true;
+            if (active.entityUuid.equals(targetUuid)) return true;
         }
         String tag = entity.getPokemon().getPersistentData().getString("legendaryspawner_id");
         if (!tag.isEmpty()) {
-            try { return pendingSpawn.contains(UUID.fromString(tag)); } catch (Exception ignored) {}
+            try { return pendingSpawn.contains(UUID.fromString(tag)) || activeLegendaries.containsKey(UUID.fromString(tag)); } 
+            catch (Exception ignored) {} // Proteccion contra NBT corrupta
         }
         return false;
     }
 
     private static void despawn(UUID trackId) {
         LegendarySpawner.server.execute(() -> {
-            ActiveLegendary active = activeLegendaries.remove(trackId);
+            ActiveLegendary active = activeLegendaries.get(trackId);
             if (active == null) return;
 
-            if (killEntity(active)) {
-                broadcastAll(LegendarySpawner.config.format(
-                    LegendarySpawner.config.getMsgDespawn(), "%pokemon%", active.speciesName()));
+            if (killEntity(active, false)) {
+                activeLegendaries.remove(trackId);
+                saveStateAsync();
+                broadcastAll(LegendarySpawner.config.format(LegendarySpawner.config.getMsgDespawn(), "%pokemon%", active.speciesName));
             }
         });
     }
 
-    private static boolean killEntity(ActiveLegendary active) {
+    private static boolean killEntity(ActiveLegendary active, boolean force) {
         try {
-            if (active.despawnTask() != null) active.despawnTask().cancel(false);
-            ServerWorld world = getRealWorld(active.worldId());
+            ServerWorld world = getRealWorld(active.worldId);
             if (world != null) {
-                Entity realEntity = world.getEntity(active.entityUuid());
+                Entity realEntity = world.getEntity(active.entityUuid);
                 if (realEntity != null && !realEntity.isRemoved()) {
+                    
+                    var battle = Cobblemon.INSTANCE.getBattleRegistry().getBattleByParticipatingEntity(realEntity);
+                    if (!force && battle != null) {
+                        // Anti Alt-F4 Exploit: Verificamos si los jugadores siguen online y en la batalla
+                        boolean hasRealPlayers = battle.getPlayers().stream().anyMatch(p -> !p.isDisconnected());
+                        if (hasRealPlayers) {
+                            if (active.despawnTask != null) active.despawnTask.cancel(false);
+                            active.despawnTask = scheduler.schedule(() -> despawn(active.trackId), 1, TimeUnit.MINUTES);
+                            return false; 
+                        }
+                    }
+
+                    if (active.despawnTask != null) active.despawnTask.cancel(false);
                     realEntity.discard();
                     return true;
+                } else if (realEntity == null) {
+                    return true; // Chunk descargado, asumimos purga.
                 }
             }
         } catch (Exception ignored) {}
-        return false;
+        return true;
     }
 
     private static void cleanupDead() {
-        activeLegendaries.entrySet().removeIf(e -> {
+        boolean changed = activeLegendaries.entrySet().removeIf(e -> {
             ActiveLegendary active = e.getValue();
-            ServerWorld world = getRealWorld(active.worldId());
-            if (world == null) return true; 
+            ServerWorld world = getRealWorld(active.worldId);
+            if (world == null) return false; 
             
-            Entity realEntity = world.getEntity(active.entityUuid());
+            Entity realEntity = world.getEntity(active.entityUuid);
             if (realEntity != null && realEntity.isRemoved()) {
                 var reason = realEntity.getRemovalReason();
-                if (reason != Entity.RemovalReason.UNLOADED_TO_CHUNK && reason != Entity.RemovalReason.UNLOADED_WITH_PLAYER) {
-                    if (active.despawnTask() != null) active.despawnTask().cancel(false);
+                // Ignorar estados fantasmas temporales al cruzar portales o montar vehículos
+                if (reason != Entity.RemovalReason.UNLOADED_TO_CHUNK && reason != Entity.RemovalReason.UNLOADED_WITH_PLAYER && reason != Entity.RemovalReason.CHANGED_DIMENSION) {
+                    if (active.despawnTask != null) active.despawnTask.cancel(false);
                     return true;
                 }
             }
             return false; 
         });
+        if (changed) saveStateAsync();
     }
 
-    private static ServerWorld getRealWorld(String worldId) {
+    // --- Persistencia Asíncrona sin Bloquear Main Thread ---
+    public static void saveStateAsync() {
+        // Hacemos un snapshot concurrente rápido de los valores para evitar ConcurrentModificationException
+        List<ActiveLegendary> snapshot = new ArrayList<>(activeLegendaries.values());
+        CompletableFuture.runAsync(() -> {
+            try {
+                File file = new File(LegendarySpawner.DATA_PATH);
+                if (!file.getParentFile().exists()) file.getParentFile().mkdirs();
+                String json = GSON.toJson(snapshot);
+                Files.writeString(file.toPath(), json);
+            } catch (Exception e) {
+                LegendarySpawner.LOGGER.error("Fallo al guardar estado asincrono", e);
+            }
+        });
+    }
+
+    public static void saveStateSync() {
         try {
-            return LegendarySpawner.server.getWorld(RegistryKey.of(RegistryKeys.WORLD, Identifier.of(worldId)));
-        } catch (Exception e) {
-            return null;
-        }
+            File file = new File(LegendarySpawner.DATA_PATH);
+            Files.writeString(file.toPath(), GSON.toJson(new ArrayList<>(activeLegendaries.values())));
+        } catch (Exception ignored) {}
+    }
+
+    public static void loadState() {
+        try {
+            File file = new File(LegendarySpawner.DATA_PATH);
+            if (!file.exists()) return;
+            String json = Files.readString(file.toPath());
+            List<ActiveLegendary> list = GSON.fromJson(json, new TypeToken<List<ActiveLegendary>>(){}.getType());
+            if (list != null) {
+                for (ActiveLegendary a : list) {
+                    int despawnMin = LegendarySpawner.config.getDespawnAfterMinutes();
+                    if (despawnMin > 0) a.despawnTask = scheduler.schedule(() -> despawn(a.trackId), despawnMin, TimeUnit.MINUTES);
+                    activeLegendaries.put(a.trackId, a);
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+    // ---------------------------------------------
+
+    private static ServerWorld getRealWorld(String worldId) {
+        try { return LegendarySpawner.server.getWorld(RegistryKey.of(RegistryKeys.WORLD, Identifier.of(worldId))); } 
+        catch (Exception e) { return null; }
     }
 
     private static Species pickLegendaryForPlayer(ServerPlayerEntity player) {
         List<String> blacklist = LegendarySpawner.config.getBlacklist(); 
         Map<String, List<String>> biomeMap = LegendarySpawner.config.getBiomeLegendsMap();
 
-        var biomeKey = player.getServerWorld().getBiome(player.getBlockPos()).getKey().orElse(null);
-        String biomeString = biomeKey != null ? biomeKey.getValue().toString() : null;
+        String biomeString = null;
+        try { // Protección NPE de biomas Custom 
+            biomeString = player.getServerWorld().getBiome(player.getBlockPos()).getKey().map(k -> k.getValue().toString()).orElse(null);
+        } catch (Exception ignored) {}
 
         List<String> candidates = new ArrayList<>();
         if (biomeString != null && biomeMap.containsKey(biomeString)) candidates.addAll(biomeMap.get(biomeString));
         
-        List<String> global = biomeMap.getOrDefault("*", List.of());
-        for (String s : global) {
-            if (!candidates.contains(s)) candidates.add(s);
-        }
-
+        for (String s : biomeMap.getOrDefault("*", List.of())) if (!candidates.contains(s)) candidates.add(s);
         candidates.replaceAll(String::toLowerCase);
         candidates.removeAll(blacklist);
 
@@ -257,46 +309,42 @@ public class LegendarySpawnManager {
         List<Species> pool = new ArrayList<>();
         for (String id : candidates) {
             Species s = PokemonSpecies.INSTANCE.getByIdentifier(net.minecraft.util.Identifier.of(
-                    id.contains(":") ? id.split(":")[0] : "cobblemon",
-                    id.contains(":") ? id.split(":")[1] : id
-                ));
+                    id.contains(":") ? id.split(":")[0] : "cobblemon", id.contains(":") ? id.split(":")[1] : id));
             if (s != null) pool.add(s);
         }
 
-        if (!pool.isEmpty()) return pool.get(new Random().nextInt(pool.size()));
+        if (!pool.isEmpty()) return pool.get(ThreadLocalRandom.current().nextInt(pool.size()));
         return null;
     }
 
     private static Vec3d findSpawnPos(ServerPlayerEntity player, ServerWorld world, int radius) {
-        Random rand = new Random();
         double px = player.getX();
         double pz = player.getZ();
         boolean isNether = world.getRegistryKey() == net.minecraft.world.World.NETHER;
 
         for (int attempt = 0; attempt < 10; attempt++) {
-            double angle = rand.nextDouble() * Math.PI * 2;
-            double dist  = radius * 0.5 + rand.nextDouble() * radius * 0.5;
+            double angle = ThreadLocalRandom.current().nextDouble() * Math.PI * 2;
+            double dist  = radius * 0.5 + ThreadLocalRandom.current().nextDouble() * radius * 0.5;
             double x = px + Math.cos(angle) * dist;
             double z = pz + Math.sin(angle) * dist;
             
-            int chunkX = (int) x >> 4;
-            int chunkZ = (int) z >> 4;
-            if (!world.getChunkManager().isChunkLoaded(chunkX, chunkZ)) continue;
+            // Fix: Calculo bitwise seguro para chunks en cuadrantes negativos
+            if (!world.getChunkManager().isChunkLoaded(MathHelper.floor(x) >> 4, MathHelper.floor(z) >> 4)) continue;
 
             int y = isNether ? findSafeNetherY(world, (int) x, (int) player.getY(), (int) z) 
                              : world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, (int) x, (int) z);
 
             if (y > world.getBottomY() && y < world.getTopY() - 2) {
-                // Fix: Protección contra El Vacío (The End) y Lagos de Lava
-                BlockPos pos = new BlockPos((int)x, y - 1, (int)z);
-                BlockState floor = world.getBlockState(pos);
-                if (floor.isAir() || floor.getFluidState().isStill() || floor.getBlock() == net.minecraft.block.Blocks.LAVA) {
-                    continue; // Repetir ciclo si el piso es vacío, agua profunda o lava.
-                }
+                BlockState floor = world.getBlockState(new BlockPos((int)x, y - 1, (int)z));
+                if (floor.isAir() || floor.getFluidState().isStill() || floor.getBlock() == net.minecraft.block.Blocks.LAVA) continue;
                 return new Vec3d(x, y, z);
             }
         }
-        return player.getPos();
+        
+        int fallbackY = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, (int)px, (int)pz);
+        // Fix de seguridad en el End: Si fallbackY indica 0 (el vacío), forzamos la altura del jugador.
+        int safeY = (fallbackY > world.getBottomY() + 5) ? fallbackY : (int)player.getY();
+        return new Vec3d(px, safeY, pz);
     }
     
     private static int findSafeNetherY(ServerWorld world, int x, int startY, int z) {
@@ -317,24 +365,28 @@ public class LegendarySpawnManager {
     private static void broadcastAll(String rawMsg) {
         var server = LegendarySpawner.server;
         if (server == null) return;
-        server.execute(() ->
-            server.getPlayerManager().broadcast(net.minecraft.text.Text.literal(colorize(rawMsg)), false));
+        server.execute(() -> server.getPlayerManager().broadcast(net.minecraft.text.Text.literal(colorize(rawMsg)), false));
     }
 
-    private static void sendMsg(ServerPlayerEntity player, String msg) {
-        LegendarySpawner.server.execute(() ->
-            player.sendMessage(net.minecraft.text.Text.literal(colorize(msg))));
+    private static void sendMsg(ServerCommandSource source, String msg) {
+        LegendarySpawner.server.execute(() -> source.sendMessage(net.minecraft.text.Text.literal(colorize(msg))));
     }
 
     private static String colorize(String s) {
-        return s.replace("&0", "§0").replace("&1", "§1").replace("&2", "§2")
-                .replace("&3", "§3").replace("&4", "§4").replace("&5", "§5")
-                .replace("&6", "§6").replace("&7", "§7").replace("&8", "§8")
-                .replace("&9", "§9").replace("&a", "§a").replace("&b", "§b")
-                .replace("&c", "§c").replace("&d", "§d").replace("&e", "§e")
-                .replace("&f", "§f").replace("&l", "§l").replace("&n", "§n")
-                .replace("&o", "§o").replace("&r", "§r");
+        return s.replace("&0", "§0").replace("&1", "§1").replace("&a", "§a").replace("&b", "§b")
+                .replace("&c", "§c").replace("&d", "§d").replace("&e", "§e").replace("&f", "§f")
+                .replace("&6", "§6").replace("&7", "§7").replace("&8", "§8");
     }
 
-    public record ActiveLegendary(UUID trackId, UUID entityUuid, String speciesName, String worldId, ScheduledFuture<?> despawnTask) {}
+    public static class ActiveLegendary {
+        public UUID trackId;
+        public UUID entityUuid;
+        public String speciesName;
+        public String worldId;
+        public transient ScheduledFuture<?> despawnTask;
+
+        public ActiveLegendary(UUID trackId, UUID entityUuid, String speciesName, String worldId) {
+            this.trackId = trackId; this.entityUuid = entityUuid; this.speciesName = speciesName; this.worldId = worldId;
+        }
+    }
 }

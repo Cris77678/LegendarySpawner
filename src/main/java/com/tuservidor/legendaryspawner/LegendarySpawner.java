@@ -17,6 +17,7 @@ public class LegendarySpawner implements ModInitializer {
 
     public static final String MOD_ID = "legendaryspawner";
     public static final String CONFIG_PATH = "config/legendaryspawner/config.json";
+    public static final String DATA_PATH = "config/legendaryspawner/active_state.json";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     public static MinecraftServer server;
@@ -24,7 +25,7 @@ public class LegendarySpawner implements ModInitializer {
 
     @Override
     public void onInitialize() {
-        LOGGER.info("LegendarySpawner loading...");
+        LOGGER.info("Iniciando LegendarySpawner (Optimizado para Produccion)...");
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
             SpawnerCommand.register(dispatcher));
@@ -32,38 +33,32 @@ public class LegendarySpawner implements ModInitializer {
         ServerLifecycleEvents.SERVER_STARTED.register(srv -> {
             server = srv;
             config.init();
+            LegendarySpawnManager.loadState();
             registerSpawnBlocker();
             LegendarySpawnManager.start();
-            LOGGER.info("LegendarySpawner ready! Interval: {} min, Chance: {}%, Min players: {}",
-                config.getSpawnIntervalMinutes(),
-                config.getSpawnChancePercent(),
-                config.getMinPlayersRequired());
         });
 
-        ServerLifecycleEvents.SERVER_STOPPED.register(srv ->
-            LegendarySpawnManager.stop());
+        ServerLifecycleEvents.SERVER_STOPPING.register(srv -> {
+            LegendarySpawnManager.saveStateSync(); // Guardado de emergencia síncrono antes de morir
+            LegendarySpawnManager.stop();
+        });
     }
 
     private void registerSpawnBlocker() {
         CobblemonEvents.POKEMON_ENTITY_SPAWN.subscribe(Priority.HIGHEST, evt -> {
+            if (evt.getEntity() == null) return Unit.INSTANCE;
             var pokemon = evt.getEntity().getPokemon();
-            if (pokemon == null) return Unit.INSTANCE;
-
-            if (!pokemon.isWild()) return Unit.INSTANCE;
+            if (pokemon == null || !pokemon.isWild()) return Unit.INSTANCE;
 
             java.util.Set<String> labels = pokemon.getSpecies().getLabels();
-            // Corrección: Bloquear legendarios, míticos y ultraentes naturales
-            boolean isLegendary = labels.contains("legendary") 
-                               || labels.contains("mythical") 
-                               || labels.contains("ultra-beast");
+            boolean isLegendary = labels.contains("legendary") || labels.contains("mythical") || labels.contains("ultra-beast");
                                
             if (isLegendary && !isManaged(evt.getEntity())) {
-                LOGGER.debug("Blocked natural special spawn: {}", pokemon.getSpecies().showdownId());
+                LOGGER.debug("Bloqueo natural ejecutado: {}", pokemon.getSpecies().showdownId());
                 evt.cancel();
             }
             return Unit.INSTANCE;
         });
-        LOGGER.info("Legendary spawn blocker registered via event.");
     }
 
     private boolean isManaged(com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity) {

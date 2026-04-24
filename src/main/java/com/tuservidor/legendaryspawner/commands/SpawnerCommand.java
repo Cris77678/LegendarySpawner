@@ -7,7 +7,6 @@ import com.tuservidor.legendaryspawner.LegendarySpawner;
 import com.tuservidor.legendaryspawner.spawn.LegendarySpawnManager;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 
 public class SpawnerCommand {
@@ -19,16 +18,13 @@ public class SpawnerCommand {
 
         base.then(CommandManager.literal("spawn")
             .executes(ctx -> {
-                ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer() ? ctx.getSource().getPlayer() : null;
-                boolean ok = LegendarySpawnManager.attemptSpawn(true, player, null);
+                boolean ok = LegendarySpawnManager.attemptSpawn(true, ctx.getSource(), null);
                 return ok ? 1 : 0;
             })
-            // Fix: greedyString permite leer comandos con espacios como "deoxys form=attack"
             .then(CommandManager.argument("properties", StringArgumentType.greedyString())
                 .executes(ctx -> {
                     String props = StringArgumentType.getString(ctx, "properties");
-                    ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer() ? ctx.getSource().getPlayer() : null;
-                    boolean ok = LegendarySpawnManager.attemptSpawn(true, player, props);
+                    boolean ok = LegendarySpawnManager.attemptSpawn(true, ctx.getSource(), props);
                     return ok ? 1 : 0;
                 })
             )
@@ -36,11 +32,9 @@ public class SpawnerCommand {
 
         base.then(CommandManager.literal("remove")
             .executes(ctx -> {
-                ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer() ? ctx.getSource().getPlayer() : null;
-                int removed = LegendarySpawnManager.removeAll(player);
-                if (removed == 0 && player != null) {
-                    player.sendMessage(Text.literal(colorize(
-                        LegendarySpawner.config.format(LegendarySpawner.config.getMsgNoneActive()))));
+                int removed = LegendarySpawnManager.removeAll(ctx.getSource());
+                if (removed == 0) {
+                    ctx.getSource().sendMessage(Text.literal(colorize(LegendarySpawner.config.format(LegendarySpawner.config.getMsgNoneActive()))));
                 }
                 return 1;
             })
@@ -51,9 +45,7 @@ public class SpawnerCommand {
                 int active = LegendarySpawnManager.getActiveCount();
                 ctx.getSource().sendMessage(Text.literal(colorize(
                     LegendarySpawner.config.getPrefix() + "&7Legendarios activos: &e" + active
-                    + " &8| Intervalo: &e" + LegendarySpawner.config.getSpawnIntervalMinutes() + " min"
-                    + " &8| Probabilidad: &e" + LegendarySpawner.config.getSpawnChancePercent() + "%"
-                    + " &8| Min jugadores: &e" + LegendarySpawner.config.getMinPlayersRequired())));
+                    + " &8| Intervalo: &e" + LegendarySpawner.config.getSpawnIntervalMinutes() + " min")));
                 return 1;
             })
         );
@@ -62,19 +54,13 @@ public class SpawnerCommand {
             .executes(ctx -> {
                 LegendarySpawner.config.init();
                 LegendarySpawnManager.reschedule();
-                ctx.getSource().sendMessage(Text.literal(colorize(
-                    LegendarySpawner.config.format(LegendarySpawner.config.getMsgReload()))));
+                ctx.getSource().sendMessage(Text.literal(colorize(LegendarySpawner.config.format(LegendarySpawner.config.getMsgReload()))));
                 return 1;
             })
         );
 
-        // Fix: Registrar el nodo base primero, guardarlo y redirigir el alias directamente a él
-        // Esto previene un NPE si Brigadier aún no ha consolidado el "Root".
         LiteralCommandNode<ServerCommandSource> baseNode = dispatcher.register(base);
-
-        dispatcher.register(CommandManager.literal("ls")
-            .requires(baseNode.getRequirement())
-            .redirect(baseNode));
+        dispatcher.register(CommandManager.literal("ls").requires(baseNode.getRequirement()).redirect(baseNode));
     }
 
     private static boolean isAdmin(ServerCommandSource src) {
