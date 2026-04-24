@@ -10,7 +10,6 @@
   "entrypoints": {
     "main": ["com.tuservidor.legendaryspawner.LegendarySpawner"]
   },
-  "mixins": ["legendaryspawner.mixins.json"],
   "depends": {
     "fabricloader": ">=0.17.2",
     "fabric-api": "*",

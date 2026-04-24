@@ -44,21 +44,21 @@ public class LegendarySpawner implements ModInitializer {
             LegendarySpawnManager.stop());
     }
 
-    /**
-     * Block natural legendary spawns using the POKEMON_ENTITY_SPAWN event.
-     * This is safer than a mixin since it uses Cobblemon's own event API.
-     */
     private void registerSpawnBlocker() {
         CobblemonEvents.POKEMON_ENTITY_SPAWN.subscribe(Priority.HIGHEST, evt -> {
             var pokemon = evt.getEntity().getPokemon();
             if (pokemon == null) return Unit.INSTANCE;
 
-            // Only cancel wild/natural spawns
             if (!pokemon.isWild()) return Unit.INSTANCE;
 
-            boolean isLegendary = pokemon.getSpecies().getLabels().contains("legendary");
+            java.util.Set<String> labels = pokemon.getSpecies().getLabels();
+            // Corrección: Bloquear legendarios, míticos y ultraentes naturales
+            boolean isLegendary = labels.contains("legendary") 
+                               || labels.contains("mythical") 
+                               || labels.contains("ultra-beast");
+                               
             if (isLegendary && !isManaged(evt.getEntity())) {
-                LOGGER.debug("Blocked natural legendary spawn: {}", pokemon.getSpecies().showdownId());
+                LOGGER.debug("Blocked natural special spawn: {}", pokemon.getSpecies().showdownId());
                 evt.cancel();
             }
             return Unit.INSTANCE;
@@ -66,10 +66,6 @@ public class LegendarySpawner implements ModInitializer {
         LOGGER.info("Legendary spawn blocker registered via event.");
     }
 
-    /**
-     * Check if this entity was spawned by our system (not a natural spawn).
-     * Our managed legendaries are tracked in LegendarySpawnManager.
-     */
     private boolean isManaged(com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity) {
         return LegendarySpawnManager.isManagedEntity(entity);
     }

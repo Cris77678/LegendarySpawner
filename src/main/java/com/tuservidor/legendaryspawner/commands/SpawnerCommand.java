@@ -16,37 +16,28 @@ public class SpawnerCommand {
         var base = CommandManager.literal("legendaryspawner")
             .requires(src -> src.hasPermissionLevel(2) || isAdmin(src));
 
-        // /legendaryspawner spawn  — force a random legendary
+        // /legendaryspawner spawn
         base.then(CommandManager.literal("spawn")
             .executes(ctx -> {
-                ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer()
-                    ? ctx.getSource().getPlayer() : null;
+                ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer() ? ctx.getSource().getPlayer() : null;
                 boolean ok = LegendarySpawnManager.attemptSpawn(true, player, null);
-                if (!ok && player != null) ctx.getSource().sendMessage(Text.literal(
-                    colorize(LegendarySpawner.config.getMsgAlreadyActive()
-                        .replace("%prefix%", LegendarySpawner.config.getPrefix()))));
                 return ok ? 1 : 0;
             })
             // /legendaryspawner spawn <species>
             .then(CommandManager.argument("species", StringArgumentType.word())
                 .executes(ctx -> {
                     String species = StringArgumentType.getString(ctx, "species");
-                    ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer()
-                        ? ctx.getSource().getPlayer() : null;
+                    ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer() ? ctx.getSource().getPlayer() : null;
                     boolean ok = LegendarySpawnManager.attemptSpawn(true, player, species);
-                    if (!ok && player != null) ctx.getSource().sendMessage(Text.literal(
-                        colorize(LegendarySpawner.config.getMsgAlreadyActive()
-                            .replace("%prefix%", LegendarySpawner.config.getPrefix()))));
                     return ok ? 1 : 0;
                 })
             )
         );
 
-        // /legendaryspawner remove  — remove all active legendaries
+        // /legendaryspawner remove
         base.then(CommandManager.literal("remove")
             .executes(ctx -> {
-                ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer()
-                    ? ctx.getSource().getPlayer() : null;
+                ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer() ? ctx.getSource().getPlayer() : null;
                 int removed = LegendarySpawnManager.removeAll(player);
                 if (removed == 0 && player != null) {
                     player.sendMessage(Text.literal(colorize(
@@ -82,7 +73,6 @@ public class SpawnerCommand {
 
         dispatcher.register(base);
 
-        // Short alias /ls
         dispatcher.register(CommandManager.literal("ls")
             .requires(base.getRequirement())
             .redirect(dispatcher.getRoot().getChild("legendaryspawner")));
@@ -93,11 +83,8 @@ public class SpawnerCommand {
         try {
             var player = src.getPlayer();
             if (player == null) return false;
-            // Catching Throwable handles NoClassDefFoundError if LuckPerms is absent
-            var lp = net.luckperms.api.LuckPermsProvider.get()
-                .getUserManager().getUser(player.getUuid());
-            return lp != null && lp.getCachedData().getPermissionData()
-                .checkPermission("legendaryspawner.admin").asBoolean();
+            var lp = net.luckperms.api.LuckPermsProvider.get().getUserManager().getUser(player.getUuid());
+            return lp != null && lp.getCachedData().getPermissionData().checkPermission("legendaryspawner.admin").asBoolean();
         } catch (Throwable t) {
             return false;
         }
