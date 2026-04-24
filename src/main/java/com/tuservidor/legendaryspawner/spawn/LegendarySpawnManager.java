@@ -29,6 +29,7 @@ import net.minecraft.sound.SoundEvents;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.StandardOpenOption; // FIX: Importación requerida para el Log de Auditoría
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -139,7 +140,6 @@ public class LegendarySpawnManager {
             ActiveLegendary active = new ActiveLegendary(trackId, entity.getUuid(), pokemon.getSpecies().getName(), world.getRegistryKey().getValue().toString());
             activeLegendaries.put(trackId, active);
 
-            // --- EFECTOS NATIVOS ---
             if (cfg.isEnableGlobalSound()) {
                 LegendarySpawner.server.getPlayerManager().getPlayerList().forEach(p -> 
                     p.playSoundToPlayer(SoundEvents.ENTITY_WITHER_SPAWN, SoundCategory.MASTER, 0.5f, 1.0f));
@@ -148,11 +148,10 @@ public class LegendarySpawnManager {
                 LightningEntity lightning = EntityType.LIGHTNING_BOLT.create(world);
                 if (lightning != null) {
                     lightning.refreshPositionAfterTeleport(pos);
-                    lightning.setCosmetic(true); // Rayo falso, sin fuego ni daño
+                    lightning.setCosmetic(true); 
                     world.spawnEntity(lightning);
                 }
             }
-            // -----------------------
 
             int locX = MathHelper.floor(pos.x); int locY = MathHelper.floor(pos.y); int locZ = MathHelper.floor(pos.z);
             String pokemonName = pokemon.getSpecies().getName();
@@ -163,10 +162,9 @@ public class LegendarySpawnManager {
 
             if (forced && source != null) sendMsg(source, cfg.format(cfg.getMsgForced(), "%pokemon%", pokemonName, "%player%", target.getName().getString()));
 
-            // --- AUDITORÍA & DISCORD ---
-            String auditMsg = "[SPAWN] " + pokemonName + " apareció en " + world.getRegistryKey().getValue() + " [" + locX + ", " + locY + ", " + locZ + "]";
+            String auditMsg = "[SPAWN] " + pokemonName + " aparecio en " + world.getRegistryKey().getValue() + " [" + locX + ", " + locY + ", " + locZ + "]";
             logAudit(auditMsg);
-            sendDiscordWebhook("⚡ Legendario Salvaje Apareció", "**" + pokemonName + "** ha aparecido cerca de **" + target.getName().getString() + "**.\nCoordenadas: `X: " + locX + " Y: " + locY + " Z: " + locZ + "`", 16753920); // Amarillo
+            sendDiscordWebhook("⚡ Legendario Salvaje Aparecio", "**" + pokemonName + "** ha aparecido cerca de **" + target.getName().getString() + "**.\nCoordenadas: `X: " + locX + " Y: " + locY + " Z: " + locZ + "`", 16753920);
 
             int despawnMin = cfg.getDespawnAfterMinutes();
             if (despawnMin > 0) active.despawnTask = scheduler.schedule(() -> despawn(trackId), despawnMin, TimeUnit.MINUTES);
@@ -188,7 +186,7 @@ public class LegendarySpawnManager {
                 
                 String msg = "[CAPTURA] " + player.getName().getString() + " ha capturado a " + active.speciesName;
                 logAudit(msg);
-                sendDiscordWebhook("🎉 ¡Legendario Capturado!", "**" + player.getName().getString() + "** ha logrado atrapar a **" + active.speciesName + "**.", 5763719); // Verde
+                sendDiscordWebhook("🎉 ¡Legendario Capturado!", "**" + player.getName().getString() + "** ha logrado atrapar a **" + active.speciesName + "**.", 5763719); 
                 
                 saveStateAsync();
             }
@@ -204,7 +202,7 @@ public class LegendarySpawnManager {
                 activeLegendaries.remove(trackId);
                 
                 logAudit("[DESPAWN] " + active.speciesName + " ha desaparecido del mundo.");
-                sendDiscordWebhook("💨 Legendario Escapó", "**" + active.speciesName + "** se ha ido sin ser capturado.", 15548997); // Rojo
+                sendDiscordWebhook("💨 Legendario Escapo", "**" + active.speciesName + "** se ha ido sin ser capturado.", 15548997); 
                 
                 saveStateAsync();
                 broadcastAll(LegendarySpawner.config.format(LegendarySpawner.config.getMsgDespawn(), "%pokemon%", active.speciesName));
@@ -245,7 +243,13 @@ public class LegendarySpawnManager {
             if (world != null) {
                 Entity realEntity = world.getEntity(active.entityUuid);
                 if (realEntity != null && !realEntity.isRemoved()) {
-                    var battle = Cobblemon.INSTANCE.getBattleRegistry().getBattleByParticipatingEntity(realEntity);
+                    
+                    // FIX: Casteamos directamente a PokemonEntity y le preguntamos su estado de batalla
+                    com.cobblemon.mod.common.api.battles.model.PokemonBattle battle = null;
+                    if (realEntity instanceof PokemonEntity pokeEntity) {
+                        battle = pokeEntity.getBattle();
+                    }
+
                     if (!force && battle != null) {
                         boolean hasRealPlayers = battle.getPlayers().stream().anyMatch(p -> !p.isDisconnected());
                         if (hasRealPlayers) {
@@ -282,7 +286,6 @@ public class LegendarySpawnManager {
         if (changed) saveStateAsync();
     }
 
-    // --- MÉTODOS DE AUDITORÍA Y DISCORD ---
     public static void logAudit(String event) {
         CompletableFuture.runAsync(() -> {
             try {
@@ -298,9 +301,9 @@ public class LegendarySpawnManager {
     public static List<String> getAuditHistory() {
         try {
             File f = new File(AUDIT_LOG_PATH);
-            if (!f.exists()) return List.of("&cNo hay historial registrado aún.");
+            if (!f.exists()) return List.of("&cNo hay historial registrado aun.");
             List<String> lines = Files.readAllLines(f.toPath());
-            int start = Math.max(0, lines.size() - 15); // Devolvemos los ultimos 15 eventos
+            int start = Math.max(0, lines.size() - 15); 
             return lines.subList(start, lines.size());
         } catch(Exception e){ return List.of("&cError leyendo el archivo de historial."); }
     }
@@ -333,7 +336,6 @@ public class LegendarySpawnManager {
             }
         });
     }
-    // ---------------------------------------
 
     public static void saveStateAsync() {
         List<ActiveLegendary> snapshot = new ArrayList<>(activeLegendaries.values());
