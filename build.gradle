@@ -1,0 +1,64 @@
+plugins {
+    id 'fabric-loom' version '1.11-SNAPSHOT'
+    id 'maven-publish'
+}
+
+archivesBaseName = project.archives_base_name
+version = project.mod_version
+group = project.maven_group
+
+repositories {
+    mavenCentral()
+    maven { url "https://maven.fabricmc.net/" }
+    maven { url "https://maven.architectury.dev/" }
+    maven { url "https://jitpack.io" }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:1.21.1"
+    mappings "net.fabricmc:yarn:1.21.1+build.3:v2"
+    modImplementation "net.fabricmc:fabric-loader:0.17.2"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:0.110.0+1.21.1"
+
+    // Cobblemon + any other local JARs placed in libs/
+    modImplementation(fileTree(dir: 'libs', include: '*.jar'))
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok:1.18.36'
+    annotationProcessor 'org.projectlombok:lombok:1.18.36'
+
+    // LuckPerms
+    modCompileOnly "net.luckperms:api:5.4"
+
+    // Kotlin stdlib (needed to compile against Cobblemon Kotlin types)
+    compileOnly "org.jetbrains.kotlin:kotlin-stdlib:2.0.0"
+
+    // Gson
+    compileOnly 'com.google.code.gson:gson:2.10.1'
+}
+
+loom {
+    accessWidenerPath = file("src/main/resources/legendaryspawner.accesswidener")
+    mods {
+        "legendaryspawner" {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+processResources {
+    inputs.property "version", project.version
+    filteringCharset "UTF-8"
+    filesMatching("fabric.mod.json") {
+        expand "version": project.version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}

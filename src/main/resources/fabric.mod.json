@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "legendaryspawner",
+  "version": "${version}",
+  "name": "LegendarySpawner",
+  "description": "Controls legendary Pokemon spawns with a timed system.",
+  "authors": ["TuServidor"],
+  "license": "All-Rights-Reserved",
+  "environment": "server",
+  "entrypoints": {
+    "main": ["com.tuservidor.legendaryspawner.LegendarySpawner"]
+  },
+  "mixins": ["legendaryspawner.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.17.2",
+    "fabric-api": "*",
+    "cobblemon": ">=1.7.3",
+    "minecraft": "1.21.1"
+  }
+}
