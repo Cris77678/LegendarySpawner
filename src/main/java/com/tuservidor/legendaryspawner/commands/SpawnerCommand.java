@@ -22,7 +22,7 @@ public class SpawnerCommand {
                 ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer()
                     ? ctx.getSource().getPlayer() : null;
                 boolean ok = LegendarySpawnManager.attemptSpawn(true, player, null);
-                if (!ok) ctx.getSource().sendMessage(Text.literal(
+                if (!ok && player != null) ctx.getSource().sendMessage(Text.literal(
                     colorize(LegendarySpawner.config.getMsgAlreadyActive()
                         .replace("%prefix%", LegendarySpawner.config.getPrefix()))));
                 return ok ? 1 : 0;
@@ -34,7 +34,7 @@ public class SpawnerCommand {
                     ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer()
                         ? ctx.getSource().getPlayer() : null;
                     boolean ok = LegendarySpawnManager.attemptSpawn(true, player, species);
-                    if (!ok) ctx.getSource().sendMessage(Text.literal(
+                    if (!ok && player != null) ctx.getSource().sendMessage(Text.literal(
                         colorize(LegendarySpawner.config.getMsgAlreadyActive()
                             .replace("%prefix%", LegendarySpawner.config.getPrefix()))));
                     return ok ? 1 : 0;
@@ -93,11 +93,12 @@ public class SpawnerCommand {
         try {
             var player = src.getPlayer();
             if (player == null) return false;
+            // Catching Throwable handles NoClassDefFoundError if LuckPerms is absent
             var lp = net.luckperms.api.LuckPermsProvider.get()
                 .getUserManager().getUser(player.getUuid());
             return lp != null && lp.getCachedData().getPermissionData()
                 .checkPermission("legendaryspawner.admin").asBoolean();
-        } catch (Exception e) {
+        } catch (Throwable t) {
             return false;
         }
     }
