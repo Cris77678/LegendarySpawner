@@ -20,6 +20,7 @@ public class SpawnerConfig {
     private int despawnAfterMinutes = 15;
     private int maxActiveLegendaries = 1;
 
+    // ── Mensajes ──────────────────────────────────────────────────────────────
     private String prefix = "&7[&6⚡ Legendario&7] ";
     private String msgSpawnAlert = "%prefix% &6¡Un &e%pokemon% &6legendario ha aparecido cerca de &e%player%&6! &8[%x%, %y%, %z%]";
     private String msgDespawn = "%prefix% &7El &e%pokemon% &7legendario ha desaparecido sin ser capturado.";
@@ -106,17 +107,22 @@ public class SpawnerConfig {
         }
     }
 
-    // Fix: Sobrescribimos a Lombok explícitamente para limpiar mayúsculas/espacios que el usuario meta en el JSON.
     public List<String> getBlacklist() {
-        if (blacklist == null) return new ArrayList<>();
+        if (blacklist == null) return new ArrayList<>(); // Protección anti-NPE
         return blacklist.stream()
             .map(String::trim)
             .map(String::toLowerCase)
             .toList();
     }
 
+    public Map<String, List<String>> getBiomeLegendsMap() {
+        if (biomeLegendsMap == null) return new HashMap<>(); // Protección anti-NPE
+        return biomeLegendsMap;
+    }
+
     public String format(String msg, Object... replacements) {
-        msg = msg.replace("%prefix%", prefix);
+        if (msg == null) return "";
+        msg = msg.replace("%prefix%", prefix != null ? prefix : "");
         for (int i = 0; i + 1 < replacements.length; i += 2) {
             msg = msg.replace(String.valueOf(replacements[i]), String.valueOf(replacements[i + 1]));
         }

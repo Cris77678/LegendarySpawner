@@ -67,7 +67,6 @@ public class LegendarySpawnManager {
             return false;
         }
 
-        // Controlamos el feedback directamente desde el origen
         if (activeLegendaries.size() >= cfg.getMaxActiveLegendaries()) {
             if (adminSource != null) sendMsg(adminSource, cfg.format(cfg.getMsgAlreadyActive()));
             return false;
@@ -83,19 +82,12 @@ public class LegendarySpawnManager {
         if (forcedSpecies != null) {
             speciesHint = PokemonSpecies.INSTANCE.getByIdentifier(net.minecraft.util.Identifier.of("cobblemon", forcedSpecies));
             if (speciesHint == null) {
-                // Notificar error de tipeo en lugar de decir "Ya está activo"
                 if (adminSource != null) sendMsg(adminSource, cfg.getPrefix() + "&cEspecie desconocida: &e" + forcedSpecies);
                 return false;
             }
         }
 
-        // Corrección: Si es un comando de admin, el objetivo DEBE ser el admin, no un jugador aleatorio.
-        ServerPlayerEntity target;
-        if (forced && adminSource != null) {
-            target = adminSource;
-        } else {
-            target = players.get(new Random().nextInt(players.size()));
-        }
+        ServerPlayerEntity target = (forced && adminSource != null) ? adminSource : players.get(new Random().nextInt(players.size()));
 
         final Species finalSpecies = speciesHint;
         final ServerPlayerEntity finalTarget = target;
@@ -111,7 +103,8 @@ public class LegendarySpawnManager {
             ServerPlayerEntity adminSource, boolean forced) {
         try {
             Species species = speciesHint != null ? speciesHint : pickLegendaryForPlayer(target);
-            if (species == null) return;
+            // Si el bioma no tiene legendarios válidos, abortamos para proteger la economía
+            if (species == null) return; 
             
             ServerWorld world = (ServerWorld) target.getWorld();
             Vec3d pos = findSpawnPos(target, world, cfg.getSpawnRadiusBlocks());
@@ -129,7 +122,13 @@ public class LegendarySpawnManager {
             world.spawnEntityAndPassengers(entity);
             pendingSpawn.remove(trackId);
 
-            ActiveLegendary active = new ActiveLegendary(trackId, entity.getUuid(), species.getName(), world.getRegistryKey().getValue().toString());
+            ScheduledFuture<?> task = null;
+            int despawnMin = cfg.getDespawnAfterMinutes();
+            if (despawnMin > 0) {
+                task = scheduler.schedule(() -> despawn(trackId), despawnMin, TimeUnit.MINUTES);
+            }
+
+            ActiveLegendary active = new ActiveLegendary(trackId, entity.getUuid(), species.getName(), world.getRegistryKey().getValue().toString(), task);
             activeLegendaries.put(trackId, active);
 
             String alert = cfg.format(cfg.getMsgSpawnAlert(), "%pokemon%", species.getName(), "%player%", target.getName().getString(),
@@ -138,11 +137,6 @@ public class LegendarySpawnManager {
 
             if (forced && adminSource != null) {
                 sendMsg(adminSource, cfg.format(cfg.getMsgForced(), "%pokemon%", species.getName(), "%player%", target.getName().getString()));
-            }
-
-            int despawnMin = cfg.getDespawnAfterMinutes();
-            if (despawnMin > 0) {
-                scheduler.schedule(() -> despawn(trackId), despawnMin, TimeUnit.MINUTES);
             }
         } catch (Exception e) {}
     }
@@ -189,6 +183,9 @@ public class LegendarySpawnManager {
 
     private static boolean killEntity(ActiveLegendary active) {
         try {
+            // Cancelamos la tarea de RAM si forzamos la muerte de la entidad
+            if (active.despawnTask() != null) active.despawnTask().cancel(false);
+            
             ServerWorld world = getRealWorld(active.worldId());
             if (world != null) {
                 Entity realEntity = world.getEntity(active.entityUuid());
@@ -203,13 +200,18 @@ public class LegendarySpawnManager {
 
     private static void cleanupDead() {
         activeLegendaries.entrySet().removeIf(e -> {
-            ServerWorld world = getRealWorld(e.getValue().worldId());
+            ActiveLegendary active = e.getValue();
+            ServerWorld world = getRealWorld(active.worldId());
             if (world == null) return true; 
             
-            Entity realEntity = world.getEntity(e.getValue().entityUuid());
+            Entity realEntity = world.getEntity(active.entityUuid());
             if (realEntity != null && realEntity.isRemoved()) {
                 var reason = realEntity.getRemovalReason();
-                return reason != Entity.RemovalReason.UNLOADED_TO_CHUNK && reason != Entity.RemovalReason.UNLOADED_WITH_PLAYER;
+                if (reason != Entity.RemovalReason.UNLOADED_TO_CHUNK && reason != Entity.RemovalReason.UNLOADED_WITH_PLAYER) {
+                    // Evitar Fuga de Memoria liberando la tarea huérfana cuando el pokemon es atrapado/muerto.
+                    if (active.despawnTask() != null) active.despawnTask().cancel(false);
+                    return true;
+                }
             }
             return false; 
         });
@@ -241,6 +243,11 @@ public class LegendarySpawnManager {
         candidates.replaceAll(String::toLowerCase);
         candidates.removeAll(blacklist);
 
+        // Protección de Economía: Si no hay legendarios en este bioma, NO hacemos fallback a todos.
+        if (candidates.isEmpty()) {
+            return null; 
+        }
+
         List<Species> pool = new ArrayList<>();
         for (String id : candidates) {
             Species s = PokemonSpecies.INSTANCE.getByIdentifier(net.minecraft.util.Identifier.of(
@@ -251,14 +258,7 @@ public class LegendarySpawnManager {
         }
 
         if (!pool.isEmpty()) return pool.get(new Random().nextInt(pool.size()));
-
-        List<Species> allLegendaries = new ArrayList<>();
-        for (Species species : PokemonSpecies.INSTANCE.getImplemented()) {
-            if (blacklist.contains(species.showdownId().toLowerCase())) continue;
-            if (species.getLabels().contains("legendary") || species.getLabels().contains("mythical") || species.getLabels().contains("ultra-beast")) allLegendaries.add(species);
-        }
-        if (allLegendaries.isEmpty()) return null;
-        return allLegendaries.get(new Random().nextInt(allLegendaries.size()));
+        return null;
     }
 
     private static Vec3d findSpawnPos(ServerPlayerEntity player, ServerWorld world, int radius) {
@@ -273,12 +273,18 @@ public class LegendarySpawnManager {
             double x = px + Math.cos(angle) * dist;
             double z = pz + Math.sin(angle) * dist;
             
+            // Protección de TPS: Verificamos si el chunk está cargado antes de pedir la altura Y
+            int chunkX = (int) x >> 4;
+            int chunkZ = (int) z >> 4;
+            if (!world.getChunkManager().isChunkLoaded(chunkX, chunkZ)) {
+                continue; // Evita forzar la carga de un chunk y generar un lagazo
+            }
+
             int y = isNether ? findSafeNetherY(world, (int) x, (int) player.getY(), (int) z) 
                              : world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, (int) x, (int) z);
 
             if (y > world.getBottomY() && y < world.getTopY() - 2) return new Vec3d(x, y, z);
         }
-        // Corrección: Retornar las coordenadas matemáticas exactas del jugador, garantizando que hay aire libre de colisiones.
         return player.getPos();
     }
     
@@ -319,5 +325,5 @@ public class LegendarySpawnManager {
                 .replace("&o", "§o").replace("&r", "§r");
     }
 
-    public record ActiveLegendary(UUID trackId, UUID entityUuid, String speciesName, String worldId) {}
+    public record ActiveLegendary(UUID trackId, UUID entityUuid, String speciesName, String worldId, ScheduledFuture<?> despawnTask) {}
 }
