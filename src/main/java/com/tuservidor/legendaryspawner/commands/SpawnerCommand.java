@@ -2,6 +2,7 @@ package com.tuservidor.legendaryspawner.commands;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.tree.LiteralCommandNode;
 import com.tuservidor.legendaryspawner.LegendarySpawner;
 import com.tuservidor.legendaryspawner.spawn.LegendarySpawnManager;
 import net.minecraft.server.command.CommandManager;
@@ -16,25 +17,23 @@ public class SpawnerCommand {
         var base = CommandManager.literal("legendaryspawner")
             .requires(src -> src.hasPermissionLevel(2) || isAdmin(src));
 
-        // /legendaryspawner spawn
         base.then(CommandManager.literal("spawn")
             .executes(ctx -> {
                 ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer() ? ctx.getSource().getPlayer() : null;
                 boolean ok = LegendarySpawnManager.attemptSpawn(true, player, null);
                 return ok ? 1 : 0;
             })
-            // /legendaryspawner spawn <species>
-            .then(CommandManager.argument("species", StringArgumentType.word())
+            // Fix: greedyString permite leer comandos con espacios como "deoxys form=attack"
+            .then(CommandManager.argument("properties", StringArgumentType.greedyString())
                 .executes(ctx -> {
-                    String species = StringArgumentType.getString(ctx, "species");
+                    String props = StringArgumentType.getString(ctx, "properties");
                     ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer() ? ctx.getSource().getPlayer() : null;
-                    boolean ok = LegendarySpawnManager.attemptSpawn(true, player, species);
+                    boolean ok = LegendarySpawnManager.attemptSpawn(true, player, props);
                     return ok ? 1 : 0;
                 })
             )
         );
 
-        // /legendaryspawner remove
         base.then(CommandManager.literal("remove")
             .executes(ctx -> {
                 ServerPlayerEntity player = ctx.getSource().isExecutedByPlayer() ? ctx.getSource().getPlayer() : null;
@@ -47,7 +46,6 @@ public class SpawnerCommand {
             })
         );
 
-        // /legendaryspawner status
         base.then(CommandManager.literal("status")
             .executes(ctx -> {
                 int active = LegendarySpawnManager.getActiveCount();
@@ -60,7 +58,6 @@ public class SpawnerCommand {
             })
         );
 
-        // /legendaryspawner reload
         base.then(CommandManager.literal("reload")
             .executes(ctx -> {
                 LegendarySpawner.config.init();
@@ -71,11 +68,13 @@ public class SpawnerCommand {
             })
         );
 
-        dispatcher.register(base);
+        // Fix: Registrar el nodo base primero, guardarlo y redirigir el alias directamente a él
+        // Esto previene un NPE si Brigadier aún no ha consolidado el "Root".
+        LiteralCommandNode<ServerCommandSource> baseNode = dispatcher.register(base);
 
         dispatcher.register(CommandManager.literal("ls")
-            .requires(base.getRequirement())
-            .redirect(dispatcher.getRoot().getChild("legendaryspawner")));
+            .requires(baseNode.getRequirement())
+            .redirect(baseNode));
     }
 
     private static boolean isAdmin(ServerCommandSource src) {
