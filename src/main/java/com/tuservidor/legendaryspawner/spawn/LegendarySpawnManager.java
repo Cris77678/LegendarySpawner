@@ -8,7 +8,10 @@ import com.cobblemon.mod.common.pokemon.Species;
 import com.tuservidor.legendaryspawner.LegendarySpawner;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
-import net.minecraft.text.Text;
+import net.minecraft.registry.RegistryKey;
+import net.minecraft.registry.RegistryKeys;
+import net.minecraft.util.Identifier;
+import net.minecraft.entity.Entity;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 
@@ -17,8 +20,10 @@ import java.util.concurrent.*;
 
 public class LegendarySpawnManager {
 
+    // Ahora guardamos el UUID de la entidad en lugar de la instancia para evitar errores de Unload de Chunks
     private static final Map<UUID, ActiveLegendary> activeLegendaries = new ConcurrentHashMap<>();
     private static final Set<UUID> pendingSpawn = ConcurrentHashMap.newKeySet();
+
     private static ScheduledExecutorService scheduler;
     private static ScheduledFuture<?> spawnTask;
 
@@ -43,7 +48,8 @@ public class LegendarySpawnManager {
     }
 
     private static void scheduleNext() {
-        int interval = LegendarySpawner.config.getSpawnIntervalMinutes();
+        // Fix: Evitar crasheo del scheduler si el intervalo se pone en 0. Mínimo 1 minuto.
+        int interval = Math.max(1, LegendarySpawner.config.getSpawnIntervalMinutes());
         spawnTask = scheduler.scheduleAtFixedRate(() -> {
             try {
                 attemptSpawn(false, null, null);
@@ -62,42 +68,27 @@ public class LegendarySpawnManager {
 
         cleanupDead();
         
-        // Fix para consolas sin jugadores online
         if (players.isEmpty()) {
             if (adminSource != null) sendMsg(adminSource, cfg.format(cfg.getPrefix() + "&cNo hay jugadores online."));
-            LegendarySpawner.LOGGER.info("Spawn skipped: 0 players online.");
             return false;
         }
 
         if (activeLegendaries.size() >= cfg.getMaxActiveLegendaries()) {
-            if (adminSource != null)
-                sendMsg(adminSource, cfg.format(cfg.getMsgAlreadyActive()));
+            if (adminSource != null) sendMsg(adminSource, cfg.format(cfg.getMsgAlreadyActive()));
             return false;
         }
-        if (!forced && players.size() < cfg.getMinPlayersRequired()) {
-            LegendarySpawner.LOGGER.info("Spawn skipped: not enough players ({}/{})",
-                players.size(), cfg.getMinPlayersRequired());
-            return false;
-        }
+        if (!forced && players.size() < cfg.getMinPlayersRequired()) return false;
         if (!forced) {
             int roll = new Random().nextInt(100);
-            if (roll >= cfg.getSpawnChancePercent()) {
-                LegendarySpawner.LOGGER.info("Spawn skipped: probability roll failed ({}/{})",
-                    roll, cfg.getSpawnChancePercent());
-                return false;
-            }
+            if (roll >= cfg.getSpawnChancePercent()) return false;
         }
 
         ServerPlayerEntity target = players.get(new Random().nextInt(players.size()));
 
         Species speciesHint = null;
         if (forcedSpecies != null) {
-            speciesHint = PokemonSpecies.INSTANCE.getByIdentifier(
-                net.minecraft.util.Identifier.of("cobblemon", forcedSpecies));
-            if (speciesHint == null) {
-                LegendarySpawner.LOGGER.warn("Unknown species: {}", forcedSpecies);
-                return false;
-            }
+            speciesHint = PokemonSpecies.INSTANCE.getByIdentifier(net.minecraft.util.Identifier.of("cobblemon", forcedSpecies));
+            if (speciesHint == null) return false;
         }
 
         final Species finalSpecies = speciesHint;
@@ -114,14 +105,11 @@ public class LegendarySpawnManager {
             ServerPlayerEntity adminSource, boolean forced) {
         try {
             Species species = speciesHint != null ? speciesHint : pickLegendaryForPlayer(target);
-            if (species == null) {
-                LegendarySpawner.LOGGER.warn("No legendary species found to spawn.");
-                return;
-            }
+            if (species == null) return;
+            
             ServerWorld world = (ServerWorld) target.getWorld();
             Vec3d pos = findSpawnPos(target, world, cfg.getSpawnRadiusBlocks());
 
-            // Nivel Aleatorio (50 a 70) para evitar que aparezcan al Nivel 1.
             int randomLevel = 50 + new Random().nextInt(21);
             String buildProps = species.showdownId() + " level=" + randomLevel;
             Pokemon pokemon = PokemonProperties.Companion.parse(buildProps).create();
@@ -139,24 +127,19 @@ public class LegendarySpawnManager {
                 pendingSpawn.remove(trackId);
             }
 
-            ActiveLegendary active = new ActiveLegendary(trackId, entity, species.getName(),
+            // Fix: Guardar entity.getUuid() en lugar de la instancia Java
+            ActiveLegendary active = new ActiveLegendary(trackId, entity.getUuid(), species.getName(), 
                 world.getRegistryKey().getValue().toString());
             activeLegendaries.put(trackId, active);
 
             LegendarySpawner.LOGGER.info("Spawned legendary {} at level {} (trackId: {})", species.getName(), randomLevel, trackId);
 
-            String alert = cfg.format(cfg.getMsgSpawnAlert(),
-                "%pokemon%", species.getName(),
-                "%player%", target.getName().getString(),
-                "%x%", String.valueOf((int) pos.x),
-                "%y%", String.valueOf((int) pos.y),
-                "%z%", String.valueOf((int) pos.z));
+            String alert = cfg.format(cfg.getMsgSpawnAlert(), "%pokemon%", species.getName(), "%player%", target.getName().getString(),
+                "%x%", String.valueOf((int) pos.x), "%y%", String.valueOf((int) pos.y), "%z%", String.valueOf((int) pos.z));
             broadcastAll(alert);
 
             if (forced && adminSource != null) {
-                sendMsg(adminSource, cfg.format(cfg.getMsgForced(),
-                    "%pokemon%", species.getName(),
-                    "%player%", target.getName().getString()));
+                sendMsg(adminSource, cfg.format(cfg.getMsgForced(), "%pokemon%", species.getName(), "%player%", target.getName().getString()));
             }
 
             int despawnMin = cfg.getDespawnAfterMinutes();
@@ -176,8 +159,7 @@ public class LegendarySpawnManager {
             if (killEntity(active)) count++;
         }
         activeLegendaries.clear();
-        if (admin != null)
-            sendMsg(admin, LegendarySpawner.config.format(LegendarySpawner.config.getMsgRemoved()));
+        if (admin != null) sendMsg(admin, LegendarySpawner.config.format(LegendarySpawner.config.getMsgRemoved()));
         return count;
     }
 
@@ -186,82 +168,103 @@ public class LegendarySpawnManager {
         return activeLegendaries.size();
     }
 
-    public static boolean isManagedEntity(com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity) {
+    public static boolean isManagedEntity(PokemonEntity entity) {
+        UUID targetUuid = entity.getUuid();
         for (ActiveLegendary active : activeLegendaries.values()) {
-            if (active.entity() == entity) return true;
+            if (active.entityUuid().equals(targetUuid)) return true;
         }
         String tag = entity.getPokemon().getPersistentData().getString("legendaryspawner_id");
         if (!tag.isEmpty()) {
-            try {
-                return pendingSpawn.contains(UUID.fromString(tag));
-            } catch (Exception ignored) {}
+            try { return pendingSpawn.contains(UUID.fromString(tag)); } catch (Exception ignored) {}
         }
         return false;
     }
 
+    // Fix: Redirigir siempre al Hilo Principal (Thread-Safety)
     private static void despawn(UUID trackId) {
-        ActiveLegendary active = activeLegendaries.remove(trackId);
-        if (active == null) return;
-        if (active.entity().isRemoved()) return; 
+        LegendarySpawner.server.execute(() -> {
+            ActiveLegendary active = activeLegendaries.remove(trackId);
+            if (active == null) return;
 
-        String name = active.speciesName();
-        killEntity(active);
-
-        broadcastAll(LegendarySpawner.config.format(
-            LegendarySpawner.config.getMsgDespawn(), "%pokemon%", name));
+            if (killEntity(active)) {
+                broadcastAll(LegendarySpawner.config.format(
+                    LegendarySpawner.config.getMsgDespawn(), "%pokemon%", active.speciesName()));
+            }
+        });
     }
 
     private static boolean killEntity(ActiveLegendary active) {
         try {
-            var entity = active.entity();
-            if (!entity.isRemoved()) {
-                LegendarySpawner.server.execute(entity::discard);
-                return true;
+            ServerWorld world = getRealWorld(active.worldId());
+            if (world != null) {
+                Entity realEntity = world.getEntity(active.entityUuid());
+                if (realEntity != null && !realEntity.isRemoved()) {
+                    realEntity.discard();
+                    return true;
+                }
             }
         } catch (Exception ignored) {}
         return false;
     }
 
     private static void cleanupDead() {
-        activeLegendaries.entrySet().removeIf(e -> e.getValue().entity().isRemoved());
+        activeLegendaries.entrySet().removeIf(e -> {
+            ServerWorld world = getRealWorld(e.getValue().worldId());
+            if (world == null) return true; 
+            
+            Entity realEntity = world.getEntity(e.getValue().entityUuid());
+            if (realEntity != null && realEntity.isRemoved()) {
+                var reason = realEntity.getRemovalReason();
+                // Fix: Solo borrarlo de nuestro control si la razón es de MUERTE/CAPTURA. 
+                // Si la razón es UNLOADED, no lo borramos de la lista porque volverá.
+                return reason != Entity.RemovalReason.UNLOADED_TO_CHUNK && 
+                       reason != Entity.RemovalReason.UNLOADED_WITH_PLAYER;
+            }
+            return false; 
+        });
+    }
+
+    private static ServerWorld getRealWorld(String worldId) {
+        try {
+            return LegendarySpawner.server.getWorld(RegistryKey.of(RegistryKeys.WORLD, Identifier.of(worldId)));
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static Species pickLegendaryForPlayer(ServerPlayerEntity player) {
-        List<String> blacklist = LegendarySpawner.config.getBlacklist();
+        List<String> blacklist = LegendarySpawner.config.getBlacklist(); // Ahora viene ya parseada a lowerCase
         Map<String, List<String>> biomeMap = LegendarySpawner.config.getBiomeLegendsMap();
 
         var biomeKey = player.getServerWorld().getBiome(player.getBlockPos()).getKey().orElse(null);
         String biomeString = biomeKey != null ? biomeKey.getValue().toString() : null;
 
         List<String> candidates = new ArrayList<>();
-        if (biomeString != null && biomeMap.containsKey(biomeString)) {
-            candidates.addAll(biomeMap.get(biomeString));
-        }
-
+        if (biomeString != null && biomeMap.containsKey(biomeString)) candidates.addAll(biomeMap.get(biomeString));
+        
         List<String> global = biomeMap.getOrDefault("*", List.of());
         for (String s : global) {
             if (!candidates.contains(s)) candidates.add(s);
         }
 
+        // Transformar todos los candidatos a minúsculas antes de eliminar usando la blacklist
+        candidates.replaceAll(String::toLowerCase);
         candidates.removeAll(blacklist);
 
         List<Species> pool = new ArrayList<>();
         for (String id : candidates) {
-            Species s = com.cobblemon.mod.common.api.pokemon.PokemonSpecies.INSTANCE
-                .getByIdentifier(net.minecraft.util.Identifier.of(
+            Species s = PokemonSpecies.INSTANCE.getByIdentifier(net.minecraft.util.Identifier.of(
                     id.contains(":") ? id.split(":")[0] : "cobblemon",
-                    id.contains(":") ? id.split(":")[1].toLowerCase() : id.toLowerCase()
+                    id.contains(":") ? id.split(":")[1] : id
                 ));
             if (s != null) pool.add(s);
         }
 
-        if (!pool.isEmpty()) {
-            return pool.get(new Random().nextInt(pool.size()));
-        }
+        if (!pool.isEmpty()) return pool.get(new Random().nextInt(pool.size()));
 
         List<Species> allLegendaries = new ArrayList<>();
-        for (Species species : com.cobblemon.mod.common.api.pokemon.PokemonSpecies.INSTANCE.getImplemented()) {
-            if (blacklist.contains(species.showdownId())) continue;
+        for (Species species : PokemonSpecies.INSTANCE.getImplemented()) {
+            if (blacklist.contains(species.showdownId().toLowerCase())) continue;
             if (species.getLabels().contains("legendary")) allLegendaries.add(species);
         }
         if (allLegendaries.isEmpty()) return null;
@@ -272,7 +275,6 @@ public class LegendarySpawnManager {
         Random rand = new Random();
         double px = player.getX();
         double pz = player.getZ();
-        // Verificar si estamos en el Nether para evitar la bedrock superior
         boolean isNether = world.getRegistryKey() == net.minecraft.world.World.NETHER;
 
         for (int attempt = 0; attempt < 10; attempt++) {
@@ -281,22 +283,14 @@ public class LegendarySpawnManager {
             double x = px + Math.cos(angle) * dist;
             double z = pz + Math.sin(angle) * dist;
             
-            int y;
-            if (isNether) {
-                y = findSafeNetherY(world, (int) x, (int) player.getY(), (int) z);
-            } else {
-                y = world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, (int) x, (int) z);
-            }
+            int y = isNether ? findSafeNetherY(world, (int) x, (int) player.getY(), (int) z) 
+                             : world.getTopY(net.minecraft.world.Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, (int) x, (int) z);
 
-            // Validar que no se generen en el techo o vacio
-            if (y > world.getBottomY() && y < world.getTopY() - 2) {
-                return new Vec3d(x, y, z);
-            }
+            if (y > world.getBottomY() && y < world.getTopY() - 2) return new Vec3d(x, y, z);
         }
         return player.getPos().add(5, 0, 0);
     }
     
-    // Función auxiliar para escanear huecos dentro del Nether
     private static int findSafeNetherY(ServerWorld world, int x, int startY, int z) {
         BlockPos.Mutable pos = new BlockPos.Mutable(x, startY, z);
         for (int dy = 0; dy < 30; dy++) {
@@ -309,17 +303,15 @@ public class LegendarySpawnManager {
     }
 
     private static boolean isSafe(ServerWorld world, BlockPos pos) {
-        return world.getBlockState(pos).isAir() 
-            && world.getBlockState(pos.up()).isAir() 
-            && !world.getBlockState(pos.down()).isAir();
+        return world.getBlockState(pos).isAir() && world.getBlockState(pos.up()).isAir() && !world.getBlockState(pos.down()).isAir();
     }
 
+    // Fix: Limpieza de variables muertas y envío directo.
     private static void broadcastAll(String rawMsg) {
         var server = LegendarySpawner.server;
         if (server == null) return;
         server.execute(() ->
-            server.getPlayerManager().broadcast(
-                net.minecraft.text.Text.literal(colorize(rawMsg)), false));
+            server.getPlayerManager().broadcast(net.minecraft.text.Text.literal(colorize(rawMsg)), false));
     }
 
     private static void sendMsg(ServerPlayerEntity player, String msg) {
@@ -337,5 +329,6 @@ public class LegendarySpawnManager {
                 .replace("&o", "§o").replace("&r", "§r");
     }
 
-    public record ActiveLegendary(UUID id, PokemonEntity entity, String speciesName, String world) {}
+    // Cambiado entity -> entityUuid e id -> trackId
+    public record ActiveLegendary(UUID trackId, UUID entityUuid, String speciesName, String worldId) {}
 }

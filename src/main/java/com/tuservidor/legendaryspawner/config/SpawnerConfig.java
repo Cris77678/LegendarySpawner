@@ -20,7 +20,6 @@ public class SpawnerConfig {
     private int despawnAfterMinutes = 15;
     private int maxActiveLegendaries = 1;
 
-    // ── Messages ──────────────────────────────────────────────────────────────
     private String prefix = "&7[&6⚡ Legendario&7] ";
     private String msgSpawnAlert = "%prefix% &6¡Un &e%pokemon% &6legendario ha aparecido cerca de &e%player%&6! &8[%x%, %y%, %z%]";
     private String msgDespawn = "%prefix% &7El &e%pokemon% &7legendario ha desaparecido sin ser capturado.";
@@ -98,13 +97,22 @@ public class SpawnerConfig {
                     LegendarySpawner.config = gson.fromJson(Files.readString(path), SpawnerConfig.class);
                 } catch (Exception e) {
                     LegendarySpawner.LOGGER.error("CRITICAL: Error sintactico en config.json. El archivo no se sobreescribira.", e);
-                    return; // Previene sobreescribir con valores por defecto y borrar los datos.
+                    return; 
                 }
             }
             Files.writeString(path, gson.toJson(LegendarySpawner.config));
         } catch (IOException e) {
             LegendarySpawner.LOGGER.error("Failed to load/save config", e);
         }
+    }
+
+    // Fix: Sobrescribimos a Lombok explícitamente para limpiar mayúsculas/espacios que el usuario meta en el JSON.
+    public List<String> getBlacklist() {
+        if (blacklist == null) return new ArrayList<>();
+        return blacklist.stream()
+            .map(String::trim)
+            .map(String::toLowerCase)
+            .toList();
     }
 
     public String format(String msg, Object... replacements) {
