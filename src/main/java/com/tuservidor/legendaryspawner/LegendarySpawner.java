@@ -25,7 +25,7 @@ public class LegendarySpawner implements ModInitializer {
 
     @Override
     public void onInitialize() {
-        LOGGER.info("Iniciando LegendarySpawner (Optimizado para Produccion)...");
+        LOGGER.info("Iniciando LegendarySpawner (Features V2)...");
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
             SpawnerCommand.register(dispatcher));
@@ -34,17 +34,18 @@ public class LegendarySpawner implements ModInitializer {
             server = srv;
             config.init();
             LegendarySpawnManager.loadState();
-            registerSpawnBlocker();
+            registerEvents();
             LegendarySpawnManager.start();
         });
 
         ServerLifecycleEvents.SERVER_STOPPING.register(srv -> {
-            LegendarySpawnManager.saveStateSync(); // Guardado de emergencia síncrono antes de morir
+            LegendarySpawnManager.saveStateSync(); 
             LegendarySpawnManager.stop();
         });
     }
 
-    private void registerSpawnBlocker() {
+    private void registerEvents() {
+        // Bloqueador de Spawns Naturales
         CobblemonEvents.POKEMON_ENTITY_SPAWN.subscribe(Priority.HIGHEST, evt -> {
             if (evt.getEntity() == null) return Unit.INSTANCE;
             var pokemon = evt.getEntity().getPokemon();
@@ -53,15 +54,19 @@ public class LegendarySpawner implements ModInitializer {
             java.util.Set<String> labels = pokemon.getSpecies().getLabels();
             boolean isLegendary = labels.contains("legendary") || labels.contains("mythical") || labels.contains("ultra-beast");
                                
-            if (isLegendary && !isManaged(evt.getEntity())) {
-                LOGGER.debug("Bloqueo natural ejecutado: {}", pokemon.getSpecies().showdownId());
+            if (isLegendary && !LegendarySpawnManager.isManagedEntity(evt.getEntity())) {
                 evt.cancel();
             }
             return Unit.INSTANCE;
         });
-    }
 
-    private boolean isManaged(com.cobblemon.mod.common.entity.pokemon.PokemonEntity entity) {
-        return LegendarySpawnManager.isManagedEntity(entity);
+        // Detector de Capturas (Auditoría y Discord)
+        CobblemonEvents.POKEMON_CAPTURED.subscribe(Priority.NORMAL, evt -> {
+            var pokemon = evt.getPokemon();
+            if (LegendarySpawnManager.isManagedPokemon(pokemon)) {
+                LegendarySpawnManager.handleCapture(evt.getPlayer(), pokemon);
+            }
+            return Unit.INSTANCE;
+        });
     }
 }

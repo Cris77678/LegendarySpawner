@@ -20,6 +20,12 @@ public class SpawnerConfig {
     private int despawnAfterMinutes = 15;
     private int maxActiveLegendaries = 1;
 
+    // --- Nuevas Integraciones ---
+    private String discordWebhookUrl = "";
+    private boolean enableVisualEffects = true;  // Rayos cosméticos
+    private boolean enableGlobalSound = true;    // Sonido de Wither global
+    // ----------------------------
+
     private String prefix = "&7[&6⚡ Legendario&7] ";
     private String msgSpawnAlert = "%prefix% &6¡Un &e%pokemon% &6legendario ha aparecido cerca de &e%player%&6! &8[%x%, %y%, %z%]";
     private String msgDespawn = "%prefix% &7El &e%pokemon% &7legendario ha desaparecido sin ser capturado.";
@@ -30,13 +36,11 @@ public class SpawnerConfig {
     private String msgNoneActive = "%prefix% &cNo hay ningun legendario activo ahora mismo.";
     private String msgReload = "%prefix% &aConfiguracion recargada.";
 
-    // Fix: ArrayList modificable previene UnsupportedOperationException
     private List<String> blacklist = new ArrayList<>(Arrays.asList("eternatus", "necrozma"));
 
     private Map<String, List<String>> biomeLegendsMap = new LinkedHashMap<>(Map.ofEntries(
         Map.entry("*", new ArrayList<>(Arrays.asList("mewtwo"))),
         Map.entry("minecraft:plains", new ArrayList<>(Arrays.asList("entei", "raikou", "suicune", "ho_oh")))
-        // (Restaura aqui todos los demas biomas de tu archivo original envolviendolos en new ArrayList<>(Arrays.asList(...)))
     ));
 
     public void init() {
@@ -48,20 +52,14 @@ public class SpawnerConfig {
                 try {
                     LegendarySpawner.config = gson.fromJson(Files.readString(path), SpawnerConfig.class);
                 } catch (Exception e) {
-                    LegendarySpawner.LOGGER.error("CRITICO: Error de sintaxis en config.json. Archivo ignorado.", e);
+                    LegendarySpawner.LOGGER.error("CRITICO: Error de sintaxis en config.json.", e);
                     return; 
                 }
             }
-            
             Path tempPath = Path.of(LegendarySpawner.CONFIG_PATH + ".tmp");
             Files.writeString(tempPath, gson.toJson(LegendarySpawner.config));
-            
-            // Fix: Reemplazo Atómico para evitar corrupción en cortes de servidor o bloqueos de Windows Defender
             Files.move(tempPath, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            
-        } catch (IOException e) {
-            LegendarySpawner.LOGGER.error("Fallo al guardar/cargar config", e);
-        }
+        } catch (IOException e) {}
     }
 
     public List<String> getBlacklist() {

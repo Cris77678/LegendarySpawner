@@ -9,6 +9,8 @@ import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.text.Text;
 
+import java.util.List;
+
 public class SpawnerCommand {
 
     public static void register(CommandDispatcher<ServerCommandSource> dispatcher) {
@@ -49,6 +51,19 @@ public class SpawnerCommand {
                 return 1;
             })
         );
+
+        // --- NUEVO COMANDO: AUDITORÍA ---
+        base.then(CommandManager.literal("history")
+            .executes(ctx -> {
+                ctx.getSource().sendMessage(Text.literal(colorize("&8[&6⚡&8] &eÚltimos 15 Eventos de Legendarios:")));
+                List<String> history = LegendarySpawnManager.getAuditHistory();
+                for (String line : history) {
+                    ctx.getSource().sendMessage(Text.literal(colorize("&7" + line)));
+                }
+                return 1;
+            })
+        );
+        // --------------------------------
 
         base.then(CommandManager.literal("reload")
             .executes(ctx -> {
